@@ -3,6 +3,7 @@ name: Build App With Pake CLI
 env:
   NODE_VERSION: "22"
   PNPM_VERSION: "10.26.2"
+  PNPM_CONFIG_FROZEN_LOCKFILE: "false"
 
 on:
   workflow_dispatch:
