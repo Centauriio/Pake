@@ -63,7 +63,7 @@ export interface PakeCliOptions {
   multiArch: boolean;
 
   // Build target architecture/format:
-  // Linux: "deb", "appimage", "deb-arm64", "appimage-arm64"; Windows: "x64", "arm64"; macOS: "intel", "apple", "universal"
+  // Linux: "deb", "appimage", "rpm", "zst" and "*-arm64" variants; Windows: "x64", "arm64"; macOS: "intel", "apple", "universal"
   targets: string;
 
   // Debug mode, outputs more logs
@@ -107,6 +107,9 @@ export interface PakeCliOptions {
 
   // Regex pattern to match URLs that should be considered internal
   internalUrlRegex: string;
+
+  // Enable in-page Find UI and Cmd/Ctrl+F/G shortcuts, default false
+  enableFind: boolean;
 
   // Initial page zoom level (50-200), default 100
   zoom: number;
@@ -167,6 +170,7 @@ export interface WindowConfig {
   start_to_tray: boolean;
   force_internal_navigation: boolean;
   internal_url_regex: string;
+  enable_find: boolean;
   zoom: number;
   min_width: number;
   min_height: number;

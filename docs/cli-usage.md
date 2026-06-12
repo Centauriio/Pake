@@ -230,6 +230,14 @@ Sets whether to disable web shortcuts in the original Pake container, defaults t
 --disabled-web-shortcuts
 ```
 
+#### [enable-find]
+
+Enable Pake's in-page Find UI. Default is `false`. When enabled, users can press `Cmd/Ctrl+F` to open Find, `Cmd/Ctrl+G` to jump to the next match, and `Cmd/Ctrl+Shift+G` to jump to the previous match.
+
+```shell
+--enable-find
+```
+
 #### [force-internal-navigation]
 
 Keeps every clicked link (even pointing to other domains) inside the Pake window instead of letting the OS open an external browser or helper. Default is `false`.
@@ -281,7 +289,7 @@ Package the application to support both Intel and M1 chips, exclusively for macO
 
 Specify the build target architecture or format:
 
-- **Linux**: `deb`, `appimage`, `rpm`, `deb-arm64`, `appimage-arm64`, `rpm-arm64` (default: `deb`, `appimage`)
+- **Linux**: `deb`, `appimage`, `rpm`, `zst`, `deb-arm64`, `appimage-arm64`, `rpm-arm64`, `zst-arm64` (default: `deb`, `appimage`)
 - **Windows**: `x64`, `arm64` (auto-detects if not specified)
 - **macOS**: `intel`, `apple`, `universal` (auto-detects if not specified)
 
@@ -297,9 +305,11 @@ Specify the build target architecture or format:
 --targets deb            # Linux DEB package (x64)
 --targets rpm            # Linux RPM package (x64)
 --targets appimage       # Linux AppImage (x64)
+--targets zst            # Linux Arch package (x64 .pkg.tar.zst)
 --targets deb-arm64      # Linux DEB package (ARM64)
 --targets rpm-arm64      # Linux RPM package (ARM64)
 --targets appimage-arm64 # Linux AppImage (ARM64)
+--targets zst-arm64      # Linux Arch package (ARM64 .pkg.tar.zst)
 ```
 
 **Note for Linux ARM64**:
@@ -307,6 +317,7 @@ Specify the build target architecture or format:
 - Cross-compilation requires additional setup. Install `gcc-aarch64-linux-gnu` and configure environment variables for cross-compilation.
 - ARM64 support enables Pake apps to run on ARM-based Linux devices, including Linux phones (postmarketOS, Ubuntu Touch), Raspberry Pi, and other ARM64 Linux systems.
 - Use `--target appimage-arm64` for portable ARM64 applications that work across different ARM64 Linux distributions.
+- Use `--targets zst` on Arch Linux based distributions to produce a `.pkg.tar.zst` package directly. Pake follows Tauri's AUR packaging guidance by building the Linux package payload first, then emitting Arch package metadata and zstd-compressed output. Requires `binutils` (for `ar`) and `libarchive` (for `bsdtar`).
 
 #### [user-agent]
 

@@ -108,6 +108,22 @@ When building AppImage on Linux (Debian, Ubuntu, Arch, etc.), you may encounter 
 ```txt
 Error: failed to run linuxdeploy
 Error: strip: Unable to recognise the format of the input file
+ERROR: Failed to run plugin: gtk
+cp: cannot stat '/usr/lib/gdk-pixbuf-2.0/2.10.0': No such file or directory
+```
+
+**Identify which failure you have first.** Two distinct problems share the `failed to run linuxdeploy` message:
+
+- `strip: Unable to recognise the format of the input file`: a strip incompatibility. Use Solution 1.
+- `Failed to run plugin: gtk` together with `cannot stat '/usr/lib/gdk-pixbuf-2.0/...'`: linuxdeploy's gtk plugin cannot find the gdk-pixbuf loaders. `NO_STRIP` will not help. Install the loaders, refresh the cache, then rebuild:
+
+```bash
+# Arch
+sudo pacman -S gdk-pixbuf2 librsvg
+# Debian / Ubuntu
+sudo apt install librsvg2-common gdk-pixbuf2.0-bin
+# refresh the loader cache, then rebuild
+gdk-pixbuf-query-loaders --update-cache
 ```
 
 **Solution 1: Automatic NO_STRIP Retry (Recommended)**
@@ -219,13 +235,23 @@ First-time installation on Windows can be slow due to:
 - Windows Defender real-time scanning
 - Network connectivity issues
 
-**Solution 1: Automatic Retry (Built-in)**
+**Solution 1: Enable CN Mirror Explicitly**
 
-Pake CLI now automatically retries with CN mirror if the initial installation times out. Simply wait for the retry to complete.
+Pake CLI uses the official npm and Rust sources by default. If downloads are slow in China, opt in to CN mirrors:
+
+```bash
+# macOS/Linux
+PAKE_USE_CN_MIRROR=1 pake https://github.com --name GitHub
+```
+
+```powershell
+# Windows PowerShell
+$env:PAKE_USE_CN_MIRROR="1"; pake https://github.com --name GitHub
+```
 
 **Solution 2: Manual Installation**
 
-If automatic retry fails, manually install dependencies:
+If dependency installation still fails, manually install dependencies:
 
 ```bash
 # Navigate to pake-cli installation directory
@@ -384,6 +410,14 @@ This is usually due to web compatibility issues. Try:
 4. **Be aware of embedded-webview sign-in limits**
 
    Some authentication providers, especially Google, may block sign-in inside embedded webviews. Because Pake packages sites into a desktop webview, Google properties or sites that rely on Google OAuth may still fail to sign in even when `--new-window` or `--multi-window` is enabled. This is provider policy, not a packaging bug. In those cases, use the normal browser, a browser-installed app, or a native desktop client.
+
+5. **WeChat Web login environment error**
+
+   WeChat detects the WebView and writes a flag cookie that blocks subsequent logins. Add `--incognito` when packaging to bypass it, at the cost of requiring a QR scan on every launch:
+
+   ```bash
+   pake https://wx.qq.com --name WeChat --incognito
+   ```
 
 ---
 

@@ -340,118 +340,19 @@ document.addEventListener("DOMContentLoaded", () => {
     true,
   );
 
-  // Collect blob urls to blob by overriding window.URL.createObjectURL
-  function collectUrlToBlobs() {
-    const backupCreateObjectURL = window.URL.createObjectURL;
-    window.blobToUrlCaches = new Map();
-    window.URL.createObjectURL = (blob) => {
-      const url = backupCreateObjectURL.call(window.URL, blob);
-      window.blobToUrlCaches.set(url, blob);
-      return url;
-    };
-  }
-
-  function convertBlobUrlToBinary(blobUrl) {
-    return new Promise((resolve, reject) => {
-      const blob = window.blobToUrlCaches.get(blobUrl);
-      if (!blob) {
-        fetch(blobUrl)
-          .then((res) => res.arrayBuffer())
-          .then((buffer) => resolve(Array.from(new Uint8Array(buffer))))
-          .catch(reject);
-        return;
-      }
-      const reader = new FileReader();
-      reader.readAsArrayBuffer(blob);
-      reader.onload = () => {
-        resolve(Array.from(new Uint8Array(reader.result)));
-      };
-      reader.onerror = () => reject(reader.error);
-    });
-  }
-
-  function downloadFromDataUri(dataURI, filename) {
-    try {
-      const byteString = atob(dataURI.split(",")[1]);
-      // write the bytes of the string to an ArrayBuffer
-      const bufferArray = new ArrayBuffer(byteString.length);
-
-      // create a view into the buffer
-      const binary = new Uint8Array(bufferArray);
-
-      // set the bytes of the buffer to the correct values
-      for (let i = 0; i < byteString.length; i++) {
-        binary[i] = byteString.charCodeAt(i);
-      }
-
-      // write the ArrayBuffer to a binary, and you're done
-      const userLanguage = getUserLanguage();
-      invoke("download_file_by_binary", {
-        params: {
-          filename,
-          binary: Array.from(binary),
-          language: userLanguage,
-        },
-      }).catch((error) => {
-        console.error("Failed to download data URI file:", filename, error);
-        showDownloadError(filename);
-      });
-    } catch (error) {
-      console.error("Failed to process data URI:", dataURI, error);
-      showDownloadError(filename || "file");
-    }
-  }
-
-  function downloadFromBlobUrl(blobUrl, filename) {
-    convertBlobUrlToBinary(blobUrl)
-      .then((binary) => {
-        const userLanguage = getUserLanguage();
-        invoke("download_file_by_binary", {
-          params: {
-            filename,
-            binary,
-            language: userLanguage,
-          },
-        }).catch((error) => {
-          console.error("Failed to download blob file:", filename, error);
-          showDownloadError(filename);
-        });
-      })
-      .catch((error) => {
-        console.error("Failed to convert blob to binary:", blobUrl, error);
-        showDownloadError(filename);
-      });
-  }
-
-  // detect blob download by createElement("a")
-  function detectDownloadByCreateAnchor() {
-    const createEle = document.createElement;
-    document.createElement = (el) => {
-      if (el !== "a") return createEle.call(document, el);
-      const anchorEle = createEle.call(document, el);
-
-      // use addEventListener to avoid overriding the original click event.
-      anchorEle.addEventListener(
-        "click",
-        (e) => {
-          const url = anchorEle.href;
-          const filename = anchorEle.download || getFilenameFromUrl(url);
-          if (window.blobToUrlCaches.has(url)) {
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            downloadFromBlobUrl(url, filename);
-            // case: download from dataURL -> convert dataURL ->
-          } else if (url.startsWith("data:")) {
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            downloadFromDataUri(url, filename);
-          }
-        },
-        true,
-      );
-
-      return anchorEle;
-    };
+  // Trigger a native browser download via a transient anchor click. The Rust
+  // on_download handler then writes the file to the Downloads folder. This is
+  // used for blob:/data: URLs because routing their bytes through the Tauri
+  // IPC fails on strict-CSP sites (e.g. Gemini), whose connect-src blocks the
+  // IPC origin. The native download path is independent of the page CSP.
+  function triggerNativeDownload(url, filename) {
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename || "";
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
   }
 
   // process special download protocol['data:','blob:']
@@ -587,11 +488,16 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
-      // Process download links for Rust to handle.
-      if (
-        isDownloadRequired(absoluteUrl, anchorElement, e) &&
-        !isSpecialDownload(absoluteUrl)
-      ) {
+      // Process download links.
+      if (isDownloadRequired(absoluteUrl, anchorElement, e)) {
+        // Let the browser download blob:/data: URLs natively; the Rust
+        // on_download handler saves them to the Downloads folder. Routing them
+        // through the IPC fails on strict-CSP sites (e.g. Gemini), whose
+        // connect-src blocks the IPC origin, and on downloads triggered from a
+        // sandboxed iframe where the IPC can't be reached.
+        if (isSpecialDownload(absoluteUrl)) {
+          return;
+        }
         e.preventDefault();
         e.stopImmediatePropagation();
         const userLanguage = getUserLanguage();
@@ -624,9 +530,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Prevent some special websites from executing in advance, before the click event is triggered.
   document.addEventListener("click", detectAnchorElementClick, true);
-
-  collectUrlToBlobs();
-  detectDownloadByCreateAnchor();
 
   // Rewrite the window.open function.
   const originalWindowOpen = window.open;
@@ -863,12 +766,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const filename = getFilenameFromUrl(imageUrl) || "image";
 
     // Handle different URL types
-    if (imageUrl.startsWith("data:")) {
-      downloadFromDataUri(imageUrl, filename);
-    } else if (imageUrl.startsWith("blob:")) {
-      if (window.blobToUrlCaches && window.blobToUrlCaches.has(imageUrl)) {
-        downloadFromBlobUrl(imageUrl, filename);
-      }
+    if (isSpecialDownload(imageUrl)) {
+      // Download blob:/data: natively so it works under strict CSP; the Rust
+      // on_download handler saves it to the Downloads folder.
+      triggerNativeDownload(imageUrl, filename);
     } else {
       // Regular HTTP(S) image
       const userLanguage = getUserLanguage();
@@ -1025,10 +926,46 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
-document.addEventListener("DOMContentLoaded", function () {
+// Bridge the Web Notification + Web Badging APIs to Pake's Rust commands so
+// pages running inside the webview can drive the macOS dock badge (and
+// taskbar badge on Linux/Windows). Installs synchronously instead of waiting
+// for DOMContentLoaded so feature-detection on Notification/setAppBadge
+// returns the polyfill before site scripts run.
+(function () {
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (!invoke) return;
+
   let permVal = "granted";
   let lastNotifTime = 0;
   let lastNotif = null;
+  // Pages that drive the badge directly via setAppBadge own its lifecycle;
+  // notifications-driven counts auto-clear on the next user interaction.
+  let pageManagedBadge = false;
+  let autoBadgeActive = false;
+
+  const normalizeBadgeCount = (count) => {
+    if (typeof count !== "number" || !Number.isFinite(count)) {
+      throw new TypeError("Badge count must be a finite number.");
+    }
+    const normalized = Math.floor(count);
+    return normalized > 0 ? Math.min(normalized, 99999) : null;
+  };
+  const setBadge = (count) => {
+    pageManagedBadge = true;
+    autoBadgeActive = false;
+    return invoke("set_dock_badge", { count }).catch(() => {});
+  };
+  const clearBadge = () => invoke("clear_dock_badge").catch(() => {});
+  const setLabel = (label) => {
+    pageManagedBadge = true;
+    autoBadgeActive = false;
+    return invoke("set_dock_badge_label", { label }).catch(() => {});
+  };
+  const incrementAutoBadge = () => {
+    if (pageManagedBadge) return Promise.resolve();
+    autoBadgeActive = true;
+    return invoke("increment_dock_badge").catch(() => {});
+  };
 
   window.addEventListener("focus", () => {
     if (lastNotif?.onclick && Date.now() - lastNotifTime < 5000) {
@@ -1037,11 +974,17 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   });
 
-  window.Notification = function (title, options) {
-    const { invoke } = window.__TAURI__.core;
+  const clearAutoBadge = () => {
+    if (pageManagedBadge || !autoBadgeActive) return;
+    autoBadgeActive = false;
+    clearBadge();
+  };
+  document.addEventListener("click", clearAutoBadge, true);
+  document.addEventListener("keydown", clearAutoBadge, true);
+
+  const wrappedNotification = function (title, options) {
     const body = options?.body || "";
     let icon = options?.icon || "";
-
     if (icon.startsWith("/")) {
       icon = window.location.origin + icon;
     }
@@ -1056,24 +999,68 @@ document.addEventListener("DOMContentLoaded", function () {
 
     lastNotifTime = Date.now();
     lastNotif = notif;
-
-    invoke("send_notification", { params: { title, body, icon } }).then(() => {
-      if (notif.onshow) notif.onshow(new Event("show"));
-    });
+    invoke("send_notification", { params: { title, body, icon } })
+      .then(() => incrementAutoBadge())
+      .then(() => {
+        if (notif.onshow) notif.onshow(new Event("show"));
+      });
 
     return notif;
   };
 
-  window.Notification.requestPermission = async () => "granted";
-
-  Object.defineProperty(window.Notification, "permission", {
+  wrappedNotification.requestPermission = async () => "granted";
+  Object.defineProperty(wrappedNotification, "permission", {
     enumerable: true,
     get: () => permVal,
     set: (v) => {
       permVal = v;
     },
   });
-});
+
+  try {
+    Object.defineProperty(window, "Notification", {
+      configurable: true,
+      writable: true,
+      value: wrappedNotification,
+    });
+  } catch (_) {}
+
+  // Web Badging API: https://wicg.github.io/badging/
+  // setAppBadge() with no argument shows an indicator dot; with a number,
+  // shows the count (0 clears). clearAppBadge() removes the badge entirely.
+  const setAppBadge = (count) => {
+    if (count === undefined) return setLabel("•");
+    let normalized;
+    try {
+      normalized = normalizeBadgeCount(count);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    if (normalized === null) {
+      pageManagedBadge = false;
+      autoBadgeActive = false;
+      return clearBadge();
+    }
+    return setBadge(normalized);
+  };
+  const clearAppBadge = () => {
+    pageManagedBadge = false;
+    autoBadgeActive = false;
+    return clearBadge();
+  };
+  try {
+    Object.defineProperty(navigator, "setAppBadge", {
+      configurable: true,
+      writable: true,
+      value: setAppBadge,
+    });
+    Object.defineProperty(navigator, "clearAppBadge", {
+      configurable: true,
+      writable: true,
+      value: clearAppBadge,
+    });
+  } catch (_) {}
+})();
 
 function setDefaultZoom() {
   const htmlZoom = window.localStorage.getItem("htmlZoom");

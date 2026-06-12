@@ -1,18 +1,15 @@
 #!/usr/bin/env node
 import log from 'loglevel';
+import chalk from 'chalk';
 import updateNotifier from 'update-notifier';
 import path from 'path';
 import fsExtra from 'fs-extra';
 import { fileURLToPath } from 'url';
-import chalk from 'chalk';
 import prompts from 'prompts';
 import os from 'os';
 import { execa, execaSync } from 'execa';
 import crypto from 'crypto';
 import ora from 'ora';
-import dns from 'dns';
-import http from 'http';
-import { promisify } from 'util';
 import fs from 'fs/promises';
 import { dir } from 'tmp-promise';
 import { fileTypeFromBuffer } from 'file-type';
@@ -23,18 +20,18 @@ import { InvalidArgumentError, program as program$1, Option } from 'commander';
 import fs$1 from 'fs';
 
 var name = "pake-cli";
-var version = "3.11.3";
+var version = "3.11.9";
 var description = "🤱🏻 Turn any webpage into a desktop app with one command. 🤱🏻 一键打包网页生成轻量桌面应用。";
 var engines = {
 	node: ">=18.0.0"
 };
 var packageManager = "pnpm@10.26.2";
 var bin = {
-	pake: "./dist/cli.js"
+	pake: "dist/cli.js"
 };
 var repository = {
 	type: "git",
-	url: "https://github.com/tw93/pake.git"
+	url: "git+https://github.com/tw93/Pake.git"
 };
 var author = {
 	name: "Tw93",
@@ -61,16 +58,18 @@ var scripts = {
 	analyze: "cd src-tauri && cargo bloat --release --crates",
 	tauri: "tauri",
 	cli: "cross-env NODE_ENV=development rollup -c -w",
+	"cli:dev": "cross-env NODE_ENV=development rollup -c -w",
 	"cli:build": "cross-env NODE_ENV=production rollup -c",
 	test: "pnpm run cli:build && cross-env PAKE_CREATE_APP=1 node tests/index.js",
 	format: "prettier --write . --ignore-unknown && find tests -name '*.js' -exec sed -i '' 's/[[:space:]]*$//' {} \\; && cd src-tauri && cargo fmt --verbose",
 	"format:check": "prettier --check . --ignore-unknown",
+	"release:check": "node scripts/check-release-version.mjs && pnpm run format:check && npx vitest run && pnpm run cli:build && npm pack --dry-run --ignore-scripts",
 	update: "pnpm update --verbose && cd src-tauri && cargo update",
 	prepublishOnly: "pnpm run cli:build"
 };
 var type = "module";
 var exports$1 = "./dist/cli.js";
-var license = "MIT";
+var license = "GPL-3.0-or-later";
 var dependencies = {
 	"@tauri-apps/api": "~2.10.1",
 	"@tauri-apps/cli": "^2.10.0",
@@ -220,6 +219,12 @@ function getSpinner(text) {
     }).start();
 }
 
+const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
+const CN_MIRROR_ENV = 'PAKE_USE_CN_MIRROR';
+function isCnMirrorEnabled(value = process.env[CN_MIRROR_ENV]) {
+    return TRUE_VALUES.has((value ?? '').trim().toLowerCase());
+}
+
 const { platform: platform$1 } = process;
 const IS_MAC = platform$1 === 'darwin';
 const IS_WIN = platform$1 === 'win32';
@@ -244,101 +249,10 @@ async function shellExec(command, timeout = 300000, env) {
         if (error.timedOut) {
             throw new Error(`Command timed out after ${timeout}ms: "${command}". Try increasing timeout or check network connectivity.`);
         }
-        let errorMsg = `Error occurred while executing command "${command}". Exit code: ${exitCode}. Details: ${errorMessage}`;
-        // Provide helpful guidance for common Linux AppImage build failures
-        // caused by strip tool incompatibility with modern glibc (2.38+)
-        const lowerError = errorMessage.toLowerCase();
-        if (process.platform === 'linux' &&
-            (lowerError.includes('linuxdeploy') ||
-                lowerError.includes('appimage') ||
-                lowerError.includes('strip'))) {
-            errorMsg +=
-                '\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' +
-                    'Linux AppImage Build Failed\n' +
-                    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n' +
-                    'Cause: Strip tool incompatibility with glibc 2.38+\n' +
-                    '       (affects Debian Trixie, Arch Linux, and other modern distros)\n\n' +
-                    'Quick fix:\n' +
-                    '  NO_STRIP=1 pake <url> --targets appimage --debug\n\n' +
-                    'Alternatives:\n' +
-                    '  • Use DEB format: pake <url> --targets deb\n' +
-                    '  • Update binutils: sudo apt install binutils (or pacman -S binutils)\n' +
-                    '  • Detailed guide: https://github.com/tw93/Pake/blob/main/docs/faq.md\n' +
-                    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
-            if (lowerError.includes('fuse') ||
-                lowerError.includes('operation not permitted') ||
-                lowerError.includes('/dev/fuse')) {
-                errorMsg +=
-                    '\n\nDocker / Container hint:\n' +
-                        '  AppImage tooling needs access to /dev/fuse. When running inside Docker, add:\n' +
-                        '    --privileged --device /dev/fuse --security-opt apparmor=unconfined\n' +
-                        '  or run on the host directly.';
-            }
-        }
-        throw new Error(errorMsg);
-    }
-}
-
-const logger = {
-    info(...msg) {
-        log.info(...msg.map((m) => chalk.white(m)));
-    },
-    debug(...msg) {
-        log.debug(...msg);
-    },
-    error(...msg) {
-        log.error(...msg.map((m) => chalk.red(m)));
-    },
-    warn(...msg) {
-        log.warn(...msg.map((m) => chalk.yellow(m)));
-    },
-    success(...msg) {
-        log.info(...msg.map((m) => chalk.green(m)));
-    },
-};
-
-const resolve = promisify(dns.resolve);
-const ping = async (host) => {
-    const lookup = promisify(dns.lookup);
-    const ip = await lookup(host);
-    const start = new Date();
-    // Prevent timeouts from affecting user experience.
-    const requestPromise = new Promise((resolve, reject) => {
-        const req = http.get(`http://${ip.address}`, (res) => {
-            const delay = new Date().getTime() - start.getTime();
-            res.resume();
-            resolve(delay);
-        });
-        req.on('error', (err) => {
-            reject(err);
-        });
-    });
-    const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => {
-            reject(new Error('Request timed out after 3 seconds'));
-        }, 1000);
-    });
-    return Promise.race([requestPromise, timeoutPromise]);
-};
-async function isChinaDomain(domain) {
-    try {
-        const [ip] = await resolve(domain);
-        return await isChinaIP(ip, domain);
-    }
-    catch (error) {
-        logger.debug(`${domain} can't be parse!`);
-        return true;
-    }
-}
-async function isChinaIP(ip, domain) {
-    try {
-        const delay = await ping(ip);
-        logger.debug(`${domain} latency is ${delay} ms`);
-        return delay > 1000;
-    }
-    catch (error) {
-        logger.debug(`ping ${domain} failed!`);
-        return true;
+        // AppImage/linuxdeploy guidance is added by the caller (BaseBuilder), which
+        // knows the build target. We only have the command line here (the tool's
+        // diagnostics stream to the terminal via stdio:inherit, not into the error).
+        throw new Error(`Error occurred while executing command "${command}". Exit code: ${exitCode}. Details: ${errorMessage}`);
     }
 }
 
@@ -389,15 +303,13 @@ function ensureRustEnv() {
     ensureCargoBinOnPath();
 }
 async function installRust() {
-    const isActions = process.env.GITHUB_ACTIONS;
-    const isInChina = await isChinaDomain('sh.rustup.rs');
-    const rustInstallScriptForMac = isInChina && !isActions
+    const rustInstallScriptForUnix = isCnMirrorEnabled()
         ? 'export RUSTUP_DIST_SERVER="https://rsproxy.cn" && export RUSTUP_UPDATE_ROOT="https://rsproxy.cn/rustup" && curl --proto "=https" --tlsv1.2 -sSf https://rsproxy.cn/rustup-init.sh | sh'
         : "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y";
     const rustInstallScriptForWindows = 'winget install --id Rustlang.Rustup';
     const spinner = getSpinner('Downloading Rust...');
     try {
-        await shellExec(IS_WIN ? rustInstallScriptForWindows : rustInstallScriptForMac, 300000, undefined);
+        await shellExec(IS_WIN ? rustInstallScriptForWindows : rustInstallScriptForUnix, 300000, undefined);
         spinner.succeed(chalk.green('✔ Rust installed successfully!'));
         ensureRustEnv();
     }
@@ -443,6 +355,24 @@ async function combineFiles(files, output) {
     return files;
 }
 
+const logger = {
+    info(...msg) {
+        log.info(...msg.map((m) => chalk.white(m)));
+    },
+    debug(...msg) {
+        log.debug(...msg);
+    },
+    error(...msg) {
+        log.error(...msg.map((m) => chalk.red(m)));
+    },
+    warn(...msg) {
+        log.warn(...msg.map((m) => chalk.yellow(m)));
+    },
+    success(...msg) {
+        log.info(...msg.map((m) => chalk.green(m)));
+    },
+};
+
 function generateSafeFilename(name) {
     return name
         .replace(/[<>:"/\\|?*]/g, '_')
@@ -480,6 +410,50 @@ function generateIdentifierSafeName(name) {
     return cleaned;
 }
 
+const LINUX_TARGET_TYPES = ['deb', 'appimage', 'rpm', 'zst'];
+// Returns the valid Linux build targets from a comma-separated targets
+// string, preserving LINUX_TARGET_TYPES order. Unknown entries are dropped.
+function filterLinuxTargets(targets) {
+    const requested = targets.split(',').map((target) => target.trim());
+    return LINUX_TARGET_TYPES.filter((target) => requested.includes(target));
+}
+
+/**
+ * Pure transform from CLI options to the window-config slice that gets
+ * merged into pake.json. Exposed for snapshot testing so option drift
+ * (e.g. a new flag added in cli-program.ts but forgotten here) is caught.
+ *
+ * Keep this function side-effect free.
+ */
+function buildWindowConfigOverrides(options, platform = asSupportedPlatform(process.platform)) {
+    const platformHideOnClose = options.hideOnClose ?? platform === 'darwin';
+    return {
+        width: options.width,
+        height: options.height,
+        fullscreen: options.fullscreen,
+        maximize: options.maximize,
+        resizable: options.resizable ?? true,
+        hide_title_bar: options.hideTitleBar,
+        activation_shortcut: options.activationShortcut,
+        always_on_top: options.alwaysOnTop,
+        dark_mode: options.darkMode,
+        disabled_web_shortcuts: options.disabledWebShortcuts,
+        hide_on_close: platformHideOnClose,
+        incognito: options.incognito,
+        title: options.title,
+        enable_wasm: options.wasm,
+        enable_drag_drop: options.enableDragDrop,
+        start_to_tray: options.startToTray && options.showSystemTray,
+        force_internal_navigation: options.forceInternalNavigation,
+        internal_url_regex: options.internalUrlRegex,
+        enable_find: options.enableFind,
+        zoom: options.zoom,
+        min_width: options.minWidth,
+        min_height: options.minHeight,
+        ignore_certificate_errors: options.ignoreCertificateErrors,
+        new_window: options.newWindow,
+    };
+}
 function asSupportedPlatform(platform) {
     if (platform !== 'win32' && platform !== 'darwin' && platform !== 'linux') {
         throw new Error(`Pake only supports win32, darwin, and linux; detected '${platform}'.`);
@@ -569,18 +543,15 @@ Terminal=false
         [desktopInstallPath]: `assets/${desktopFileName}`,
     };
     const validTargets = [
-        'deb',
-        'appimage',
-        'rpm',
-        'deb-arm64',
-        'appimage-arm64',
-        'rpm-arm64',
+        ...LINUX_TARGET_TYPES,
+        ...LINUX_TARGET_TYPES.map((target) => `${target}-arm64`),
     ];
     const baseTarget = options.targets.includes('-arm64')
         ? options.targets.replace('-arm64', '')
         : options.targets;
     if (validTargets.includes(options.targets)) {
-        tauriConf.bundle.targets = [baseTarget];
+        // zst is repacked from the deb payload, so Tauri itself bundles a deb.
+        tauriConf.bundle.targets = [baseTarget === 'zst' ? 'deb' : baseTarget];
     }
     else {
         logger.warn(`✼ The target must be one of ${validTargets.join(', ')}, the default 'deb' will be used.`);
@@ -735,34 +706,9 @@ async function writeAllConfigs(tauriConf, platform) {
 }
 async function mergeConfig(url, options, tauriConf) {
     await copyTemplateConfigs();
-    const { width, height, fullscreen, maximize, hideTitleBar, alwaysOnTop, appVersion, darkMode, disabledWebShortcuts, activationShortcut, userAgent, showSystemTray, useLocalFile, identifier, name = 'pake-app', resizable = true, installerLanguage, hideOnClose, incognito, title, wasm, enableDragDrop, startToTray, forceInternalNavigation, internalUrlRegex, zoom, minWidth, minHeight, ignoreCertificateErrors, newWindow, camera, microphone, } = options;
+    const { appVersion, userAgent, showSystemTray, useLocalFile, identifier, name = 'pake-app', installerLanguage, wasm, camera, microphone, } = options;
     const platform = asSupportedPlatform(process.platform);
-    const platformHideOnClose = hideOnClose ?? platform === 'darwin';
-    const tauriConfWindowOptions = {
-        width,
-        height,
-        fullscreen,
-        maximize,
-        resizable,
-        hide_title_bar: hideTitleBar,
-        activation_shortcut: activationShortcut,
-        always_on_top: alwaysOnTop,
-        dark_mode: darkMode,
-        disabled_web_shortcuts: disabledWebShortcuts,
-        hide_on_close: platformHideOnClose,
-        incognito,
-        title,
-        enable_wasm: wasm,
-        enable_drag_drop: enableDragDrop,
-        start_to_tray: startToTray && showSystemTray,
-        force_internal_navigation: forceInternalNavigation,
-        internal_url_regex: internalUrlRegex,
-        zoom,
-        min_width: minWidth,
-        min_height: minHeight,
-        ignore_certificate_errors: ignoreCertificateErrors,
-        new_window: newWindow,
-    };
+    const tauriConfWindowOptions = buildWindowConfigOverrides(options, platform);
     Object.assign(tauriConf.pake.windows[0], { url, ...tauriConfWindowOptions });
     tauriConf.productName = name;
     tauriConf.identifier = identifier;
@@ -808,70 +754,177 @@ async function mergeConfig(url, options, tauriConf) {
     await writeAllConfigs(tauriConf, platform);
 }
 
+/**
+ * Returns build environment variables overrides for macOS, where Rust crates
+ * sometimes need explicit C/C++ flags and a deterministic SDK target. Other
+ * platforms inherit `process.env` unchanged.
+ */
+function getBuildEnvironment() {
+    if (!IS_MAC) {
+        return undefined;
+    }
+    const currentPath = process.env.PATH || '';
+    const systemToolsPath = '/usr/bin';
+    const buildPath = currentPath.startsWith(`${systemToolsPath}:`)
+        ? currentPath
+        : `${systemToolsPath}:${currentPath}`;
+    return {
+        CFLAGS: '-fno-modules',
+        CXXFLAGS: '-fno-modules',
+        MACOSX_DEPLOYMENT_TARGET: '14.0',
+        PATH: buildPath,
+    };
+}
+/**
+ * Windows needs more time due to native compilation and antivirus scanning.
+ */
+function getInstallTimeout() {
+    return process.platform === 'win32' ? 900000 : 600000;
+}
+function getBuildTimeout() {
+    return 900000;
+}
+let packageManagerCache = null;
+function parseMajorVersion(version) {
+    const match = version.match(/^v?(\d+)/);
+    return match ? Number(match[1]) : null;
+}
+function getPinnedPnpmMajorVersion() {
+    const packageManager = packageJson.packageManager;
+    const match = packageManager?.match(/^pnpm@(\d+)/);
+    return match ? Number(match[1]) : null;
+}
+async function detectNpm(execa) {
+    try {
+        await execa('npm', ['--version'], { stdio: 'ignore' });
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * Returns 'pnpm' when available, otherwise 'npm'. Throws if neither is found.
+ * Cached after the first successful detection so tests can call repeatedly.
+ */
+async function detectPackageManager() {
+    if (packageManagerCache) {
+        return packageManagerCache;
+    }
+    const { execa } = await import('execa');
+    let pnpmVersion;
+    try {
+        const { stdout } = await execa('pnpm', ['--version']);
+        pnpmVersion = stdout.trim();
+    }
+    catch {
+        if (await detectNpm(execa)) {
+            logger.info('✺ pnpm not available, using npm for package management.');
+            packageManagerCache = 'npm';
+            return 'npm';
+        }
+        throw new Error('Neither pnpm nor npm is available. Please install a package manager.');
+    }
+    const normalizedPnpmVersion = pnpmVersion.startsWith('v')
+        ? pnpmVersion
+        : `v${pnpmVersion}`;
+    const pnpmMajor = parseMajorVersion(pnpmVersion);
+    const pinnedPnpmMajor = getPinnedPnpmMajorVersion();
+    if (pnpmMajor !== null &&
+        pinnedPnpmMajor !== null &&
+        pnpmMajor !== pinnedPnpmMajor) {
+        if (!(await detectNpm(execa))) {
+            throw new Error(`Detected pnpm ${normalizedPnpmVersion}, but Pake is pinned to ${packageJson.packageManager}. Install npm so Pake can fall back, or use pnpm ${pinnedPnpmMajor}.x to match the project pin.`);
+        }
+        logger.warn(`✼ Detected pnpm ${normalizedPnpmVersion}, but Pake is pinned to ${packageJson.packageManager}; using npm for package management instead.`);
+        packageManagerCache = 'npm';
+        return 'npm';
+    }
+    logger.info('✺ Using pnpm for package management.');
+    packageManagerCache = 'pnpm';
+    return 'pnpm';
+}
+function getInstallCommand(packageManager, useCnMirror) {
+    const registryOption = useCnMirror
+        ? ' --registry=https://registry.npmmirror.com'
+        : '';
+    const peerDepsOption = packageManager === 'npm' ? ' --legacy-peer-deps' : '';
+    return `cd "${npmDirectory}" && ${packageManager} install${registryOption}${peerDepsOption}`;
+}
+async function copyFileWithSamePathGuard(sourcePath, destinationPath) {
+    if (path.resolve(sourcePath) === path.resolve(destinationPath)) {
+        return;
+    }
+    try {
+        await fsExtra.copy(sourcePath, destinationPath, { overwrite: true });
+    }
+    catch (error) {
+        if (error instanceof Error &&
+            error.message.includes('Source and destination must not be the same')) {
+            return;
+        }
+        throw error;
+    }
+}
+function isGeneratedCnMirrorConfig(projectConfig, cnMirrorConfig) {
+    return projectConfig.trim() === cnMirrorConfig.trim();
+}
+/**
+ * Toggles `.cargo/config.toml` to point at rsproxy.cn when the user opts in
+ * via `PAKE_USE_CN_MIRROR=1`, and removes the auto-generated mirror config
+ * (or warns about a manual one) when they opt out.
+ */
+async function configureCargoRegistry(tauriSrcPath, useCnMirror) {
+    const rustProjectDir = path.join(tauriSrcPath, '.cargo');
+    const projectConf = path.join(rustProjectDir, 'config.toml');
+    const projectCnConf = path.join(tauriSrcPath, 'rust_proxy.toml');
+    if (useCnMirror) {
+        await fsExtra.ensureDir(rustProjectDir);
+        await copyFileWithSamePathGuard(projectCnConf, projectConf);
+        return;
+    }
+    if (!(await fsExtra.pathExists(projectConf))) {
+        return;
+    }
+    const [projectConfig, cnMirrorConfig] = await Promise.all([
+        fsExtra.readFile(projectConf, 'utf8'),
+        fsExtra.readFile(projectCnConf, 'utf8'),
+    ]);
+    if (isGeneratedCnMirrorConfig(projectConfig, cnMirrorConfig)) {
+        await fsExtra.remove(projectConf);
+        return;
+    }
+    if (projectConfig.includes('rsproxy.cn')) {
+        logger.warn(`✼ ${projectConf} still references rsproxy.cn. Remove it or set ${CN_MIRROR_ENV}=1 if you want to use the CN mirror.`);
+    }
+}
+
+// Appended to the error when a Linux AppImage build fails for good. linuxdeploy's
+// diagnostics stream to the terminal (stdio: 'inherit') and never reach
+// error.message, so we cannot name the exact cause. We only reach here after
+// NO_STRIP=1 has been applied and still failed, so strip is shown as ruled out.
+const APPIMAGE_BAR = '━'.repeat(56);
+const APPIMAGE_FAILURE_GUIDANCE = `\n\n${APPIMAGE_BAR}\n` +
+    'Linux AppImage Build Failed\n' +
+    `${APPIMAGE_BAR}\n\n` +
+    'The AppImage bundler (linuxdeploy) failed. Common causes and fixes:\n\n' +
+    '  • Strip incompatibility (glibc 2.38+): NO_STRIP=1 was already applied and\n' +
+    '    the build still failed, so strip is likely not the cause.\n' +
+    '  • Missing gdk-pixbuf loaders (e.g. "cannot stat\n' +
+    "    '/usr/lib/gdk-pixbuf-2.0/...'\"): install them, then rebuild:\n" +
+    '      Arch:    sudo pacman -S gdk-pixbuf2 librsvg\n' +
+    '      Debian:  sudo apt install librsvg2-common gdk-pixbuf2.0-bin\n' +
+    '      Fedora:  sudo dnf install gdk-pixbuf2-modules librsvg2\n' +
+    '      then:    sudo gdk-pixbuf-query-loaders --update-cache\n' +
+    '      (Arch refreshes the cache automatically via a pacman hook)\n' +
+    '  • Running in Docker/container: AppImage needs /dev/fuse:\n' +
+    '      --privileged --device /dev/fuse --security-opt apparmor=unconfined\n\n' +
+    'Still stuck? Build a DEB instead: pake <url> --targets deb\n' +
+    'Detailed guide: https://github.com/tw93/Pake/blob/main/docs/faq.md\n' +
+    APPIMAGE_BAR;
 class BaseBuilder {
     constructor(options) {
         this.options = options;
-    }
-    getBuildEnvironment() {
-        if (!IS_MAC) {
-            return undefined;
-        }
-        const currentPath = process.env.PATH || '';
-        const systemToolsPath = '/usr/bin';
-        const buildPath = currentPath.startsWith(`${systemToolsPath}:`)
-            ? currentPath
-            : `${systemToolsPath}:${currentPath}`;
-        return {
-            CFLAGS: '-fno-modules',
-            CXXFLAGS: '-fno-modules',
-            MACOSX_DEPLOYMENT_TARGET: '14.0',
-            PATH: buildPath,
-        };
-    }
-    getInstallTimeout() {
-        // Windows needs more time due to native compilation and antivirus scanning
-        return process.platform === 'win32' ? 900000 : 600000;
-    }
-    getBuildTimeout() {
-        return 900000;
-    }
-    async detectPackageManager() {
-        if (BaseBuilder.packageManagerCache) {
-            return BaseBuilder.packageManagerCache;
-        }
-        const { execa } = await import('execa');
-        try {
-            await execa('pnpm', ['--version'], { stdio: 'ignore' });
-            logger.info('✺ Using pnpm for package management.');
-            BaseBuilder.packageManagerCache = 'pnpm';
-            return 'pnpm';
-        }
-        catch {
-            try {
-                await execa('npm', ['--version'], { stdio: 'ignore' });
-                logger.info('✺ pnpm not available, using npm for package management.');
-                BaseBuilder.packageManagerCache = 'npm';
-                return 'npm';
-            }
-            catch {
-                throw new Error('Neither pnpm nor npm is available. Please install a package manager.');
-            }
-        }
-    }
-    async copyFileWithSamePathGuard(sourcePath, destinationPath) {
-        if (path.resolve(sourcePath) === path.resolve(destinationPath)) {
-            return;
-        }
-        try {
-            await fsExtra.copy(sourcePath, destinationPath, { overwrite: true });
-        }
-        catch (error) {
-            if (error instanceof Error &&
-                error.message.includes('Source and destination must not be the same')) {
-                return;
-            }
-            throw error;
-        }
     }
     async prepare() {
         const tauriSrcPath = path.join(npmDirectory, 'src-tauri');
@@ -896,60 +949,34 @@ class BaseBuilder {
                 process.exit(1);
             }
         }
-        const isChina = await isChinaDomain('www.npmjs.com');
         const spinner = getSpinner('Installing package...');
-        const rustProjectDir = path.join(tauriSrcPath, '.cargo');
-        const projectConf = path.join(rustProjectDir, 'config.toml');
-        await fsExtra.ensureDir(rustProjectDir);
-        // Detect available package manager
-        const packageManager = await this.detectPackageManager();
-        const registryOption = ' --registry=https://registry.npmmirror.com';
-        const peerDepsOption = packageManager === 'npm' ? ' --legacy-peer-deps' : '';
-        const timeout = this.getInstallTimeout();
-        const buildEnv = this.getBuildEnvironment();
+        const useCnMirror = isCnMirrorEnabled();
+        await configureCargoRegistry(tauriSrcPath, useCnMirror);
+        const packageManager = await detectPackageManager();
+        const timeout = getInstallTimeout();
+        const buildEnv = getBuildEnvironment();
         // Show helpful message for first-time users
         if (!tauriTargetPathExists) {
             logger.info(process.platform === 'win32'
                 ? '✺ First-time setup may take 10-15 minutes on Windows (compiling dependencies)...'
                 : '✺ First-time setup may take 5-10 minutes (installing dependencies)...');
         }
-        let usedMirror = isChina;
+        if (useCnMirror) {
+            logger.info(`✺ ${CN_MIRROR_ENV}=1 detected, using ${packageManager}/rsProxy CN mirror.`);
+        }
         try {
-            if (isChina) {
-                logger.info(`✺ Located in China, using ${packageManager}/rsProxy CN mirror.`);
-                const projectCnConf = path.join(tauriSrcPath, 'rust_proxy.toml');
-                await this.copyFileWithSamePathGuard(projectCnConf, projectConf);
-                await shellExec(`cd "${npmDirectory}" && ${packageManager} install${registryOption}${peerDepsOption}`, timeout, { ...buildEnv, CI: 'true' });
-            }
-            else {
-                await shellExec(`cd "${npmDirectory}" && ${packageManager} install${peerDepsOption}`, timeout, { ...buildEnv, CI: 'true' });
-            }
+            await shellExec(getInstallCommand(packageManager, useCnMirror), timeout, {
+                ...buildEnv,
+                CI: 'true',
+            });
             spinner.succeed(chalk.green('Package installed!'));
         }
         catch (error) {
-            // If installation times out and we haven't tried the mirror yet, retry with mirror
-            if (error instanceof Error &&
-                error.message.includes('timed out') &&
-                !usedMirror) {
-                spinner.fail(chalk.yellow('Installation timed out, retrying with CN mirror...'));
-                logger.info('✺ Retrying installation with CN mirror for better speed...');
-                const retrySpinner = getSpinner('Retrying installation...');
-                usedMirror = true;
-                try {
-                    const projectCnConf = path.join(tauriSrcPath, 'rust_proxy.toml');
-                    await this.copyFileWithSamePathGuard(projectCnConf, projectConf);
-                    await shellExec(`cd "${npmDirectory}" && ${packageManager} install${registryOption}${peerDepsOption}`, timeout, { ...buildEnv, CI: 'true' });
-                    retrySpinner.succeed(chalk.green('Package installed with CN mirror!'));
-                }
-                catch (retryError) {
-                    retrySpinner.fail(chalk.red('Installation failed'));
-                    throw retryError;
-                }
+            spinner.fail(chalk.red('Installation failed'));
+            if (!useCnMirror) {
+                logger.info(`✺ If downloads are slow in China, retry with ${CN_MIRROR_ENV}=1 to use CN mirrors.`);
             }
-            else {
-                spinner.fail(chalk.red('Installation failed'));
-                throw error;
-            }
+            throw error;
         }
         if (!tauriTargetPathExists) {
             logger.warn('✼ The first packaging may be slow, please be patient and wait, it will be faster afterwards.');
@@ -961,7 +988,7 @@ class BaseBuilder {
     async start(url) {
         logger.info('Pake dev server starting...');
         await mergeConfig(url, this.options, tauriConfig);
-        const packageManager = await this.detectPackageManager();
+        const packageManager = await detectPackageManager();
         const configPath = path.join(npmDirectory, 'src-tauri', '.pake', 'tauri.conf.json');
         const features = this.getBuildFeatures();
         const featureArgs = features.length > 0 ? `--features ${features.join(',')}` : '';
@@ -969,11 +996,10 @@ class BaseBuilder {
         const command = `cd "${npmDirectory}" && ${packageManager} run tauri${argSeparator} dev --config "${configPath}" ${featureArgs}`;
         await shellExec(command);
     }
-    async buildAndCopy(url, target) {
+    async buildAndCopy(url, target, logSuccess = true) {
         const { name = 'pake-app' } = this.options;
         await mergeConfig(url, this.options, tauriConfig);
-        // Detect available package manager
-        const packageManager = await this.detectPackageManager();
+        const packageManager = await detectPackageManager();
         // Build app
         const buildSpinner = getSpinner('Building app...');
         // Let spinner run for a moment so user can see it, then stop before package manager command
@@ -981,41 +1007,43 @@ class BaseBuilder {
         buildSpinner.stop();
         // Show static message to keep the status visible
         logger.warn('✸ Building app...');
-        const baseEnv = this.getBuildEnvironment();
+        const baseEnv = getBuildEnvironment();
         let buildEnv = {
             ...(baseEnv ?? {}),
             ...(process.env.NO_STRIP ? { NO_STRIP: process.env.NO_STRIP } : {}),
         };
         const resolveExecEnv = () => Object.keys(buildEnv).length > 0 ? buildEnv : undefined;
-        // Warn users about potential AppImage build failures on modern Linux systems.
-        // The linuxdeploy tool bundled in Tauri uses an older strip tool that doesn't
-        // recognize the .relr.dyn section introduced in glibc 2.38+.
-        if (process.platform === 'linux' && target === 'appimage') {
-            if (!buildEnv.NO_STRIP) {
-                logger.warn('⚠ Building AppImage on Linux may fail due to strip incompatibility with glibc 2.38+');
-                logger.warn('⚠ If build fails, retry with: NO_STRIP=1 pake <url> --targets appimage');
-            }
+        const isLinuxAppImage = process.platform === 'linux' && target === 'appimage';
+        // AppImage builds can fail at the linuxdeploy strip step on glibc 2.38+.
+        // A real failure now prints full guidance, so only hint in debug mode.
+        if (isLinuxAppImage && !buildEnv.NO_STRIP && this.options.debug) {
+            logger.warn('⚠ AppImage strip step can fail on glibc 2.38+; Pake will auto-retry with NO_STRIP=1.');
         }
         const buildCommand = `cd "${npmDirectory}" && ${this.getBuildCommand(packageManager)}`;
-        const buildTimeout = this.getBuildTimeout();
+        const buildTimeout = getBuildTimeout();
         try {
             await shellExec(buildCommand, buildTimeout, resolveExecEnv());
         }
         catch (error) {
-            const shouldRetryWithoutStrip = process.platform === 'linux' &&
-                target === 'appimage' &&
-                !buildEnv.NO_STRIP &&
-                this.isLinuxDeployStripError(error);
-            if (shouldRetryWithoutStrip) {
-                logger.warn('⚠ AppImage build failed during linuxdeploy strip step, retrying with NO_STRIP=1 automatically.');
-                buildEnv = {
-                    ...buildEnv,
-                    NO_STRIP: '1',
-                };
+            if (!isLinuxAppImage) {
+                throw error;
+            }
+            // linuxdeploy's diagnostics stream to the terminal (stdio: 'inherit') and
+            // never reach error.message, so we cannot classify the cause. strip is the
+            // most common AppImage failure, so retry once with NO_STRIP=1; if that
+            // (or an already-NO_STRIP run) still fails, surface all known causes.
+            if (buildEnv.NO_STRIP) {
+                error.message += APPIMAGE_FAILURE_GUIDANCE;
+                throw error;
+            }
+            logger.warn('⚠ AppImage build failed, retrying once with NO_STRIP=1 (common glibc 2.38+ strip issue).');
+            buildEnv = { ...buildEnv, NO_STRIP: '1' };
+            try {
                 await shellExec(buildCommand, buildTimeout, resolveExecEnv());
             }
-            else {
-                throw error;
+            catch (retryError) {
+                retryError.message += APPIMAGE_FAILURE_GUIDANCE;
+                throw retryError;
             }
         }
         // Copy app
@@ -1029,8 +1057,10 @@ class BaseBuilder {
             await this.copyRawBinary(npmDirectory, name);
         }
         await fsExtra.remove(appPath);
-        logger.success('✔ Build success!');
-        logger.success('✔ App installer located in', distPath);
+        if (logSuccess) {
+            logger.success('✔ Build success!');
+            logger.success('✔ App installer located in', distPath);
+        }
         // Log binary location if preserved
         if (this.options.keepBinary) {
             const binaryPath = this.getRawBinaryPath(name);
@@ -1060,18 +1090,6 @@ class BaseBuilder {
     }
     getFileType(target) {
         return target;
-    }
-    isLinuxDeployStripError(error) {
-        if (!(error instanceof Error) || !error.message) {
-            return false;
-        }
-        const message = error.message.toLowerCase();
-        return (message.includes('linuxdeploy') ||
-            message.includes('failed to run linuxdeploy') ||
-            message.includes('strip:') ||
-            message.includes('unable to recognise the format of the input file') ||
-            message.includes('appimage tool failed') ||
-            message.includes('strip tool'));
     }
     resolveTargetArch(requestedArch) {
         if (requestedArch === 'auto' || !requestedArch) {
@@ -1210,7 +1228,6 @@ class BaseBuilder {
         return 'src-tauri/target'; // Override in subclasses if needed
     }
 }
-BaseBuilder.packageManagerCache = null;
 BaseBuilder.ARCH_MAPPINGS = {
     darwin: {
         arm64: 'aarch64-apple-darwin',
@@ -1386,21 +1403,123 @@ class LinuxBuilder extends BaseBuilder {
         return `${name}_${version}_${arch}`;
     }
     async build(url) {
-        const targetTypes = ['deb', 'appimage', 'rpm'];
-        const requestedTargets = this.options.targets
-            .split(',')
-            .map((t) => t.trim());
-        for (const target of targetTypes) {
-            if (requestedTargets.includes(target)) {
-                this.currentBuildType = target;
+        const targets = filterLinuxTargets(this.options.targets);
+        if (targets.length === 0) {
+            throw new Error(`No valid Linux target in "${this.options.targets}". Valid targets: ${LINUX_TARGET_TYPES.join(', ')}.`);
+        }
+        for (const target of targets) {
+            this.currentBuildType = target;
+            if (target === 'zst') {
+                await this.buildAndCopy(url, 'deb', false);
+                await this.createArchPackageFromDeb();
+            }
+            else {
                 await this.buildAndCopy(url, target);
             }
         }
     }
+    async ensureArchPackagingTools() {
+        const requiredTools = [
+            { tool: 'ar', pacmanPackage: 'binutils' },
+            { tool: 'bsdtar', pacmanPackage: 'libarchive' },
+        ];
+        for (const { tool, pacmanPackage } of requiredTools) {
+            try {
+                await shellExec(`command -v ${tool} >/dev/null 2>&1`);
+            }
+            catch {
+                throw new Error(`Building a zst package requires "${tool}". Install it first, e.g. "sudo pacman -S ${pacmanPackage}".`);
+            }
+        }
+    }
+    async createArchPackageFromDeb() {
+        const { name = 'pake-app' } = this.options;
+        const packageName = generateLinuxPackageName(name);
+        const version = tauriConfig.version;
+        const arch = this.buildArch === 'arm64' ? 'aarch64' : 'x86_64';
+        const debPath = path.resolve(`${name}.deb`);
+        const packagePath = path.resolve(`${name}-${version}-1-${arch}.pkg.tar.zst`);
+        const workDir = path.resolve('.pake-arch-package');
+        const dataDir = path.join(workDir, 'data');
+        const controlDir = path.join(workDir, 'control');
+        await this.ensureArchPackagingTools();
+        await fsExtra.remove(workDir);
+        await fsExtra.ensureDir(dataDir);
+        await fsExtra.ensureDir(controlDir);
+        try {
+            await shellExec(`cd "${controlDir}" && ar x "${debPath}"`);
+            const dataArchive = (await fsExtra.readdir(controlDir)).find((file) => file.startsWith('data.tar'));
+            if (!dataArchive) {
+                throw new Error(`Could not find data.tar payload in ${debPath}`);
+            }
+            await shellExec(`tar -xf "${path.join(controlDir, dataArchive)}" -C "${dataDir}"`);
+            // Drop the desktop entry auto-generated by the Tauri deb bundler;
+            // the payload already ships Pake's own com.pake.<name>.desktop.
+            await fsExtra.remove(path.join(dataDir, 'usr', 'share', 'applications', `${packageName}.desktop`));
+            const installedSize = await this.getDirectorySize(dataDir);
+            const pkgInfo = `pkgname = ${packageName}
+pkgbase = ${packageName}
+pkgver = ${version}-1
+pkgdesc = ${name} Pake app
+url = https://github.com/tw93/Pake
+builddate = ${Math.floor(Date.now() / 1000)}
+packager = Pake
+size = ${installedSize}
+arch = ${arch}
+license = custom
+depend = cairo
+depend = desktop-file-utils
+depend = gdk-pixbuf2
+depend = glib2
+depend = gtk3
+depend = hicolor-icon-theme
+depend = libsoup3
+depend = pango
+depend = webkit2gtk-4.1
+`;
+            await fsExtra.writeFile(path.join(dataDir, '.PKGINFO'), pkgInfo);
+            await fsExtra.writeFile(path.join(dataDir, '.INSTALL'), `post_install() {
+  gtk-update-icon-cache -q -t -f usr/share/icons/hicolor
+  update-desktop-database -q usr/share/applications
+}
+
+post_upgrade() {
+  post_install
+}
+
+post_remove() {
+  gtk-update-icon-cache -q -t -f usr/share/icons/hicolor
+  update-desktop-database -q usr/share/applications
+}
+`);
+            await shellExec(`bsdtar --zstd -cf "${packagePath}" -C "${dataDir}" .PKGINFO .INSTALL usr`);
+            await fsExtra.remove(debPath);
+            logger.success('✔ Build success!');
+            logger.success('✔ App installer located in', packagePath);
+        }
+        finally {
+            await fsExtra.remove(workDir);
+        }
+    }
+    async getDirectorySize(directory) {
+        let size = 0;
+        for (const entry of await fsExtra.readdir(directory, {
+            withFileTypes: true,
+        })) {
+            const entryPath = path.join(directory, entry.name);
+            if (entry.isDirectory()) {
+                size += await this.getDirectorySize(entryPath);
+            }
+            else if (entry.isFile()) {
+                size += (await fsExtra.stat(entryPath)).size;
+            }
+        }
+        return size;
+    }
     // Override buildAndCopy to ensure currentBuildType is synced if called directly, though the loop above handles it most of the time.
-    async buildAndCopy(url, target) {
+    async buildAndCopy(url, target, logSuccess = true) {
         this.currentBuildType = target;
-        await super.buildAndCopy(url, target);
+        await super.buildAndCopy(url, target, logSuccess);
     }
     getBuildCommand(packageManager = 'pnpm') {
         const configPath = path.join('src-tauri', '.pake', 'tauri.conf.json');
@@ -1546,6 +1665,9 @@ function getIconSourcePriority(url, appName) {
 const ICO_HEADER_SIZE = 6;
 const ICO_DIR_ENTRY_SIZE = 16;
 const ICO_TYPE_ICON = 1;
+// Standard Windows icon sizes covering tray (16/24/32), taskbar (32/48),
+// shell (48/256) and high-DPI (128/256). Issue #1190.
+const WIN_STANDARD_ICO_SIZES = [16, 24, 32, 48, 64, 128, 256];
 function decodeDimension(value) {
     return value === 0 ? 256 : value;
 }
@@ -1645,6 +1767,91 @@ async function writeIcoWithPreferredSize(sourcePath, outputPath, preferredSize) 
     }
 }
 /**
+ * PNG signature `\x89PNG`. ICO frames may carry either a BMP DIB or an
+ * embedded PNG payload (PNG-in-ICO, supported since Windows Vista).
+ */
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+function frameLooksLikePng(entry) {
+    return (entry.data.length >= PNG_SIGNATURE.length &&
+        entry.data.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE));
+}
+async function decodeFrameToPng(entry) {
+    if (frameLooksLikePng(entry)) {
+        return Buffer.from(entry.data);
+    }
+    // BMP DIB frames need to go through sharp's ico-to-PNG path, which only
+    // works on the full ICO container. Fall back to letting the caller use a
+    // sharp pipeline against the original ICO for the missing source.
+    return null;
+}
+async function pickLargestFrameAsPng(buffer, entries) {
+    const largest = [...entries].sort((a, b) => Math.max(b.width, b.height) - Math.max(a.width, a.height))[0];
+    if (largest) {
+        const decoded = await decodeFrameToPng(largest);
+        if (decoded) {
+            return decoded;
+        }
+    }
+    // Fallback: let sharp render directly from the ICO buffer. sharp picks the
+    // largest embedded frame on its own.
+    try {
+        return await sharp(buffer).png().toBuffer();
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Ensures the produced ICO carries every Windows standard size so the OS
+ * never has to downsample a 256x256 frame to 16x16 for the tray.
+ * Falls back to `writeIcoWithPreferredSize` if rendering fails.
+ *
+ * Issue #1190.
+ */
+async function ensureMultiResolutionIco(sourcePath, outputPath, preferredSize = 256, desiredSizes = WIN_STANDARD_ICO_SIZES) {
+    try {
+        const sourceBuffer = await fsExtra.readFile(sourcePath);
+        const entries = parseIcoBuffer(sourceBuffer);
+        const sourcePng = await pickLargestFrameAsPng(sourceBuffer, entries);
+        if (!sourcePng) {
+            return await writeIcoWithPreferredSize(sourcePath, outputPath, preferredSize);
+        }
+        const frames = await Promise.all(desiredSizes.map(async (size) => {
+            // Reuse an existing exact-size PNG frame when possible to keep any
+            // hand-tuned small icon (e.g. a 16x16 with deliberate pixel hinting).
+            const exact = entries.find((entry) => entry.width === size && entry.height === size);
+            if (exact && frameLooksLikePng(exact)) {
+                return { size, png: Buffer.from(exact.data) };
+            }
+            const png = await sharp(sourcePng)
+                .resize(size, size, {
+                fit: 'contain',
+                background: { r: 0, g: 0, b: 0, alpha: 0 },
+            })
+                .ensureAlpha()
+                .png()
+                .toBuffer();
+            return { size, png };
+        }));
+        // Order frames so the preferred size lands first (Windows shell uses the
+        // first-listed frame as a quality hint when choosing which to display).
+        frames.sort((a, b) => {
+            const aExact = a.size === preferredSize ? 0 : 1;
+            const bExact = b.size === preferredSize ? 0 : 1;
+            if (aExact !== bExact)
+                return aExact - bExact;
+            return b.size - a.size;
+        });
+        const icoBuffer = buildIcoFromPngBuffers(frames);
+        await fsExtra.ensureDir(path.dirname(outputPath));
+        await fsExtra.outputFile(outputPath, icoBuffer);
+        return true;
+    }
+    catch {
+        return await writeIcoWithPreferredSize(sourcePath, outputPath, preferredSize);
+    }
+}
+/**
  * Builds an ICO file from an array of PNG buffers using the PNG-in-ICO format
  * (supported since Windows Vista). This preserves alpha transparency.
  */
@@ -1693,7 +1900,7 @@ const ICON_CONFIG = {
     },
 };
 const PLATFORM_CONFIG = {
-    win: { format: '.ico', sizes: [16, 32, 48, 64, 128, 256] },
+    win: { format: '.ico', sizes: [...WIN_STANDARD_ICO_SIZES] },
     linux: { format: '.png', size: 512 },
     macos: { format: '.icns', sizes: [16, 32, 64, 128, 256, 512, 1024] },
 };
@@ -1728,10 +1935,15 @@ async function copyWindowsIconIfNeeded(convertedPath, appName) {
     try {
         const finalIconPath = generateIconPath(appName);
         await fsExtra.ensureDir(path.dirname(finalIconPath));
-        // Reorder ICO to prioritize 256px icons for better Windows display
-        const reordered = await writeIcoWithPreferredSize(convertedPath, finalIconPath, 256);
-        if (!reordered) {
-            await fsExtra.copy(convertedPath, finalIconPath);
+        // Re-render ICO so every Windows standard size is present and prefer the
+        // 256px frame as the leading entry; falls back to plain reordering if the
+        // ICO is non-decodable, then to a raw copy. (Issue #1190)
+        const upgraded = await ensureMultiResolutionIco(convertedPath, finalIconPath, 256);
+        if (!upgraded) {
+            const reordered = await writeIcoWithPreferredSize(convertedPath, finalIconPath, 256);
+            if (!reordered) {
+                await fsExtra.copy(convertedPath, finalIconPath);
+            }
         }
         return finalIconPath;
     }
@@ -2188,6 +2400,28 @@ function normalizeUrl(urlToNormalize) {
     }
 }
 
+/**
+ * Error class used for user-facing CLI errors.
+ *
+ * The top-level catch in `bin/cli.ts` prints `message` directly without a
+ * stack trace and exits with code 1. Use this for predictable failures
+ * (invalid names, missing files, etc.) so users see a clean message instead
+ * of a Node.js stack dump.
+ */
+class PakeError extends Error {
+    constructor(message) {
+        super(message);
+        this.isUserError = true;
+        this.name = 'PakeError';
+    }
+}
+function isPakeError(error) {
+    return (error instanceof PakeError ||
+        (typeof error === 'object' &&
+            error !== null &&
+            error.isUserError === true));
+}
+
 function resolveAppName(name, platform) {
     const domain = getDomain(name) || 'pake';
     return platform !== 'linux' ? capitalizeFirstLetter(domain) : domain;
@@ -2198,8 +2432,8 @@ function resolveLocalAppName(filePath, platform) {
         return generateLinuxPackageName(baseName) || 'pake-app';
     }
     const normalized = baseName
-        .replace(/[^a-zA-Z0-9\u4e00-\u9fff -]/g, '')
-        .replace(/^[ -]+/, '')
+        .replace(/[^a-zA-Z0-9\u4e00-\u9fff .-]/g, '')
+        .replace(/^[ .-]+/, '')
         .replace(/\s+/g, ' ')
         .trim();
     return normalized || 'pake-app';
@@ -2207,7 +2441,7 @@ function resolveLocalAppName(filePath, platform) {
 function isValidName(name, platform) {
     const reg = platform === 'linux'
         ? /^[a-z0-9\u4e00-\u9fff][a-z0-9\u4e00-\u9fff-]*$/
-        : /^[a-zA-Z0-9\u4e00-\u9fff][a-zA-Z0-9\u4e00-\u9fff- ]*$/;
+        : /^[a-zA-Z0-9\u4e00-\u9fff][a-zA-Z0-9\u4e00-\u9fff .-]*$/;
     return !!name && reg.test(name);
 }
 async function handleOptions(options, url) {
@@ -2228,15 +2462,15 @@ async function handleOptions(options, url) {
     }
     if (name && !isValidName(name, platform)) {
         const LINUX_NAME_ERROR = `✕ Name should only include lowercase letters, numbers, and dashes (not leading dashes). Examples: com-123-xxx, 123pan, pan123, weread, we-read, 123.`;
-        const DEFAULT_NAME_ERROR = `✕ Name should only include letters, numbers, dashes, and spaces (not leading dashes and spaces). Examples: 123pan, 123Pan, Pan123, weread, WeRead, WERead, we-read, We Read, 123.`;
+        const DEFAULT_NAME_ERROR = `✕ Name should only include letters, numbers, dots, dashes, and spaces (not leading dots, dashes, and spaces). Examples: 123pan, 123Pan, Pan123, weread, WeRead, WERead, we-read, We Read, Vectorizer.AI, 123.`;
         const errorMsg = platform === 'linux' ? LINUX_NAME_ERROR : DEFAULT_NAME_ERROR;
-        logger.error(errorMsg);
         if (isActions) {
+            logger.error(errorMsg);
             name = resolveAppName(url, platform);
             logger.warn(`✼ Inside github actions, use the default name: ${name}`);
         }
         else {
-            process.exit(1);
+            throw new PakeError(errorMsg);
         }
     }
     const resolvedName = name || 'pake-app';
@@ -2293,6 +2527,7 @@ const DEFAULT_PAKE_OPTIONS = {
     startToTray: false,
     forceInternalNavigation: false,
     internalUrlRegex: '',
+    enableFind: false,
     iterativeBuild: false,
     zoom: 100,
     minWidth: 0,
@@ -2306,8 +2541,11 @@ const DEFAULT_PAKE_OPTIONS = {
 
 function validateNumberInput(value) {
     const parsedValue = Number(value);
-    if (isNaN(parsedValue)) {
+    if (!Number.isFinite(parsedValue)) {
         throw new InvalidArgumentError('Not a number.');
+    }
+    if (parsedValue < 0) {
+        throw new InvalidArgumentError('Must not be negative.');
     }
     return parsedValue;
 }
@@ -2432,14 +2670,17 @@ ${green('|_|   \\__,_|_|\\_\\___|  can turn any webpage into a desktop app with 
         .addOption(new Option('--internal-url-regex <string>', 'Regex pattern to match URLs that should be considered internal')
         .default(DEFAULT_PAKE_OPTIONS.internalUrlRegex)
         .hideHelp())
+        .addOption(new Option('--enable-find', 'Enable in-page Find UI with Cmd/Ctrl+F/G shortcuts')
+        .default(DEFAULT_PAKE_OPTIONS.enableFind)
+        .hideHelp())
         .addOption(new Option('--installer-language <string>', 'Installer language')
         .default(DEFAULT_PAKE_OPTIONS.installerLanguage)
         .hideHelp())
         .addOption(new Option('--zoom <number>', 'Initial page zoom level (50-200)')
         .default(DEFAULT_PAKE_OPTIONS.zoom)
         .argParser((value) => {
-        const zoom = parseInt(value);
-        if (isNaN(zoom) || zoom < 50 || zoom > 200) {
+        const zoom = Number(value);
+        if (!Number.isFinite(zoom) || zoom < 50 || zoom > 200) {
             throw new Error('--zoom must be a number between 50 and 200');
         }
         return zoom;
@@ -2494,21 +2735,46 @@ async function checkUpdateTips() {
     });
 }
 program.action(async (url, options) => {
-    await checkUpdateTips();
-    if (!url) {
-        program.help({
-            error: false,
-        });
-        return;
+    try {
+        await checkUpdateTips();
+        if (!url) {
+            program.help({
+                error: false,
+            });
+            return;
+        }
+        log.setDefaultLevel('info');
+        log.setLevel('info');
+        if (options.debug) {
+            log.setLevel('debug');
+        }
+        const appOptions = await handleOptions(options, url);
+        const builder = BuilderProvider.create(appOptions);
+        await builder.prepare();
+        await builder.build(url);
     }
-    log.setDefaultLevel('info');
-    log.setLevel('info');
-    if (options.debug) {
-        log.setLevel('debug');
+    catch (error) {
+        if (isPakeError(error)) {
+            console.error(chalk.red(error.message));
+        }
+        else if (error instanceof Error) {
+            console.error(chalk.red(`✕ ${error.message}`));
+            if (options?.debug && error.stack) {
+                console.error(chalk.gray(error.stack));
+            }
+        }
+        else {
+            console.error(chalk.red(`✕ Unexpected error: ${String(error)}`));
+        }
+        process.exit(1);
     }
-    const appOptions = await handleOptions(options, url);
-    const builder = BuilderProvider.create(appOptions);
-    await builder.prepare();
-    await builder.build(url);
 });
-program.parse();
+program.parseAsync().catch((error) => {
+    if (error instanceof Error) {
+        console.error(chalk.red(`✕ ${error.message}`));
+    }
+    else {
+        console.error(chalk.red(`✕ Unexpected error: ${String(error)}`));
+    }
+    process.exit(1);
+});

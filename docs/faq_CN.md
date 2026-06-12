@@ -108,6 +108,22 @@ sudo apt-get install -y libayatana-appindicator3-dev
 ```txt
 Error: failed to run linuxdeploy
 Error: strip: Unable to recognise the format of the input file
+ERROR: Failed to run plugin: gtk
+cp: cannot stat '/usr/lib/gdk-pixbuf-2.0/2.10.0': No such file or directory
+```
+
+**先判断你遇到的是哪一种失败。** 同样是 `failed to run linuxdeploy`，实际有两类不同原因：
+
+- `strip: Unable to recognise the format of the input file`：strip 不兼容，按解决方案 1 处理。
+- `Failed to run plugin: gtk` 且伴随 `cannot stat '/usr/lib/gdk-pixbuf-2.0/...'`：linuxdeploy 的 gtk 插件找不到 gdk-pixbuf loaders，`NO_STRIP` 无效。安装 loaders、刷新缓存后重新构建：
+
+```bash
+# Arch
+sudo pacman -S gdk-pixbuf2 librsvg
+# Debian / Ubuntu
+sudo apt install librsvg2-common gdk-pixbuf2.0-bin
+# 刷新 loader 缓存后重新构建
+gdk-pixbuf-query-loaders --update-cache
 ```
 
 **解决方案 1：自动 NO_STRIP 重试（推荐）**
@@ -219,13 +235,23 @@ Windows 首次安装可能较慢，原因包括：
 - Windows Defender 实时扫描
 - 网络连接问题
 
-**解决方案 1：自动重试（内置）**
+**解决方案 1：显式启用国内镜像**
 
-Pake CLI 现在会在初次安装超时后自动使用国内镜像重试。只需等待重试完成即可。
+Pake CLI 默认使用官方 npm 和 Rust 源。如果在国内下载较慢，可以显式启用国内镜像：
+
+```bash
+# macOS/Linux
+PAKE_USE_CN_MIRROR=1 pake https://github.com --name GitHub
+```
+
+```powershell
+# Windows PowerShell
+$env:PAKE_USE_CN_MIRROR="1"; pake https://github.com --name GitHub
+```
 
 **解决方案 2：手动安装依赖**
 
-如果自动重试失败，可手动安装依赖：
+如果依赖安装仍然失败，可手动安装依赖：
 
 ```bash
 # 进入 pake-cli 安装目录
@@ -384,6 +410,14 @@ Pake 可以自动转换图标，但提供正确的格式更可靠。
 4. **注意嵌入式 WebView 的登录限制**
 
    某些认证提供方，尤其是 Google，可能会阻止在嵌入式 WebView 中完成登录。由于 Pake 是把网站包装进桌面 WebView，Google 自家站点或依赖 Google OAuth 的网站，即使启用了 `--new-window` 或 `--multi-window`，也仍然可能无法在应用内完成登录。这属于提供方策略限制，不是打包逻辑错误。遇到这种情况时，建议改用普通浏览器、浏览器安装版站点应用，或官方原生桌面客户端。
+
+5. **微信 Web 版登录环境异常**
+
+   微信检测到 WebView 后会写入标记 Cookie，导致后续持续被拦截。打包时加 `--incognito` 可解决，代价是每次启动都需要重新扫码登录：
+
+   ```bash
+   pake https://wx.qq.com --name WeChat --incognito
+   ```
 
 ---
 
