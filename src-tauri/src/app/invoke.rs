@@ -7,7 +7,6 @@ use tauri::http::Method;
 use tauri::{command, AppHandle, Manager, Url, WebviewWindow};
 use tauri_plugin_http::reqwest::{ClientBuilder, Request};
 
-#[cfg(target_os = "macos")]
 use tauri::Theme;
 
 static BADGE_COUNT: AtomicI64 = AtomicI64::new(0);
@@ -183,40 +182,24 @@ pub fn set_dock_badge_label(app: AppHandle, label: Option<String>) -> Result<(),
 
 #[command]
 pub async fn update_theme_mode(app: AppHandle, mode: String) {
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(window) = app.get_webview_window("pake") {
-            let theme = if mode == "dark" {
-                Theme::Dark
-            } else {
-                Theme::Light
-            };
-            let _ = window.set_theme(Some(theme));
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app;
-        let _ = mode;
+    if let Some(window) = app.get_webview_window("pake") {
+        let theme = if mode == "dark" {
+            Theme::Dark
+        } else {
+            Theme::Light
+        };
+        let _ = window.set_theme(Some(theme));
     }
 }
 
+// Apply native WebView zoom (WKWebView pageZoom / WebView2 ZoomFactor / WebKitGTK
+// zoom level) instead of CSS hacks. CSS `transform: scale` and `html.style.zoom`
+// break complex SPAs like ChatGPT (fixed positioning shifts, unrepainted layers);
+// native zoom recalculates layout the same way a browser does for Cmd/Ctrl +/-.
 #[command]
-#[allow(unreachable_code)]
-pub fn clear_cache_and_restart(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("pake") {
-        match window.clear_all_browsing_data() {
-            Ok(_) => {
-                // Clear all browsing data successfully
-                app.restart();
-                Ok(())
-            }
-            Err(e) => {
-                eprintln!("Failed to clear browsing data: {}", e);
-                Err(format!("Failed to clear browsing data: {}", e))
-            }
-        }
-    } else {
-        Err("Main window not found".to_string())
-    }
+pub fn set_zoom(window: WebviewWindow, percent: f64) -> Result<(), String> {
+    let factor = (percent / 100.0).clamp(0.3, 2.0);
+    window
+        .set_zoom(factor)
+        .map_err(|e| format!("Failed to set zoom: {}", e))
 }

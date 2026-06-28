@@ -11,19 +11,13 @@ const shortcuts = {
 };
 
 function setZoom(zoom) {
-  const html = document.getElementsByTagName("html")[0];
-  const body = document.body;
-  const zoomValue = parseFloat(zoom) / 100;
-  const isWindows = /windows/i.test(navigator.userAgent);
-
-  if (isWindows) {
-    body.style.transform = `scale(${zoomValue})`;
-    body.style.transformOrigin = "top left";
-    body.style.width = `${100 / zoomValue}%`;
-    body.style.height = `${100 / zoomValue}%`;
-  } else {
-    html.style.zoom = zoom;
-    window.dispatchEvent(new Event("resize"));
+  // Use native WebView zoom (WKWebView pageZoom / WebView2 ZoomFactor) instead of
+  // CSS hacks. `transform: scale` and `html.style.zoom` break complex SPAs like
+  // ChatGPT: the page shifts right on Windows and parts of the UI stop repainting
+  // on macOS. Native zoom recalculates layout exactly like a browser does.
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (invoke) {
+    invoke("set_zoom", { percent: parseFloat(zoom) }).catch(() => {});
   }
 
   window.localStorage.setItem("htmlZoom", zoom);
@@ -272,6 +266,33 @@ function shouldBypassPakeLinkHandling(rawHref) {
   );
 }
 
+function shouldNavigateAuthInCurrentWindow() {
+  return /macintosh|mac os x/i.test(navigator.userAgent);
+}
+
+function canNavigateAuthUrl(url) {
+  const normalizedUrl = normalizeAnchorHref(url).toLowerCase();
+  return normalizedUrl !== "" && normalizedUrl !== "about:blank";
+}
+
+function navigateInCurrentWindow(url) {
+  window.location.href = url;
+  return window;
+}
+
+function openAuthNavigation(originalWindowOpen, url, name, specs) {
+  if (shouldNavigateAuthInCurrentWindow() && canNavigateAuthUrl(url)) {
+    return navigateInCurrentWindow(url);
+  }
+
+  const authWindow = originalWindowOpen.call(window, url, name, specs);
+  if (!authWindow) {
+    return navigateInCurrentWindow(url);
+  }
+
+  return authWindow;
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const tauri = window.__TAURI__;
   const appWindow = tauri.window.getCurrentWindow();
@@ -432,24 +453,23 @@ document.addEventListener("DOMContentLoaded", () => {
       const absoluteUrl = hrefUrl.href;
       let filename = anchorElement.download || getFilenameFromUrl(absoluteUrl);
 
-      // Keep OAuth/authentication flows inside the app when popup support is enabled.
+      // Keep OAuth/authentication flows inside the app. Without --new-window,
+      // navigate in place so the SSO redirect chain and callback stay in the
+      // webview instead of falling through to the system browser.
       if (window.isAuthLink(absoluteUrl)) {
         console.log("[Pake] Handling OAuth navigation in-app:", absoluteUrl);
+        e.preventDefault();
+        e.stopImmediatePropagation();
 
         if (window.pakeConfig?.new_window) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-
-          const authWindow = originalWindowOpen.call(
-            window,
+          openAuthNavigation(
+            originalWindowOpen,
             absoluteUrl,
             "_blank",
             "width=1200,height=800,scrollbars=yes,resizable=yes",
           );
-
-          if (!authWindow) {
-            window.location.href = absoluteUrl;
-          }
+        } else {
+          window.location.href = absoluteUrl;
         }
 
         return;
@@ -465,7 +485,15 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         if (isInternalUrl(absoluteUrl)) {
-          // For internal links (based on regex or domain), let the browser handle it naturally
+          // With --new-window the Rust on_new_window handler opens an in-app
+          // window; without it, deferring to the native handler sends the
+          // _blank target to the system browser and strands SSO callbacks.
+          // Navigate in place so internal links stay inside the webview.
+          if (!window.pakeConfig?.new_window) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            window.location.href = absoluteUrl;
+          }
           return;
         }
 
@@ -544,9 +572,15 @@ document.addEventListener("DOMContentLoaded", () => {
       return originalWindowOpen.call(window, url, name, specs);
     }
 
-    // Allow authentication popups to open normally
+    // Avoid macOS WebKit auth-popup crashes by navigating auth URLs in-place.
     if (window.isAuthPopup(url, name)) {
-      return originalWindowOpen.call(window, url, name, specs);
+      try {
+        const baseUrl = window.location.origin + window.location.pathname;
+        const absoluteUrl = new URL(url, baseUrl).href;
+        return openAuthNavigation(originalWindowOpen, absoluteUrl, name, specs);
+      } catch (error) {
+        return openAuthNavigation(originalWindowOpen, url, name, specs);
+      }
     }
 
     try {
@@ -561,6 +595,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
         handleExternalLink(absoluteUrl);
         return null;
+      }
+
+      // With --new-window the native handler opens an in-app window; without it,
+      // originalWindowOpen would route the internal target to the system browser
+      // and strand SSO callbacks, so navigate in place instead.
+      if (!window.pakeConfig?.new_window) {
+        window.location.href = absoluteUrl;
+        return window;
       }
 
       return originalWindowOpen.call(window, absoluteUrl, name, specs);
